@@ -11,7 +11,7 @@ import (
 func TestStuffWithTheClient(t *testing.T) {
 	key := ""
 	secret := ""
-	client, err := ramClient(key, secret)
+	client, err := getRAMClient(key, secret)
 	if err != nil {
 		panic(err)
 	}

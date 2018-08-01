@@ -5,20 +5,20 @@ import (
 	"testing"
 )
 
-func TestGenUsernameDisplaynameAndUsergroupname(t *testing.T) {
+func TestGenUsernameDisplaynameAndRoleName(t *testing.T) {
 	displayName := "displayName"
-	userGroupName := "userGroupName"
+	roleName := "roleName"
 
 	// example of an expected result:
-	// userGroupName-displayName-db60aa6b7ddbd7cd8e90c4faa3abff98
-	username, err := GenerateUsername(displayName, userGroupName)
+	// roleName-displayName-db60aa6b7ddbd7cd8e90c4faa3abff98
+	username, err := GenerateUsername(displayName, roleName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(username) > maxLength {
+	if len(username) > usernameMaxLength {
 		t.Fatalf("length of %s is %d, which is greater than the max length", username, len(username))
 	}
-	expectedPrefix := userGroupName + "-" + displayName + "-"
+	expectedPrefix := roleName + "-" + displayName + "-"
 	if !strings.HasPrefix(username, expectedPrefix) {
 		t.Fatalf("%s doesn't start with expected prefix of %s", username, expectedPrefix)
 	}
@@ -28,20 +28,20 @@ func TestGenUsernameDisplaynameAndUsergroupname(t *testing.T) {
 	}
 }
 
-func TestGenUsernameUsergroupname(t *testing.T) {
+func TestGenUsernameRoleName(t *testing.T) {
 	displayName := ""
-	userGroupName := "userGroupName"
+	roleName := "roleName"
 
 	// example of an expected result:
-	// userGroupName-0669a86fbf4b2c0111e29faeacc7ce3c
-	username, err := GenerateUsername(displayName, userGroupName)
+	// roleName-0669a86fbf4b2c0111e29faeacc7ce3c
+	username, err := GenerateUsername(displayName, roleName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(username) > maxLength {
+	if len(username) > usernameMaxLength {
 		t.Fatalf("length of %s is %d, which is greater than the max length", username, len(username))
 	}
-	expectedPrefix := userGroupName + "-"
+	expectedPrefix := roleName + "-"
 	if !strings.HasPrefix(username, expectedPrefix) {
 		t.Fatalf("%s doesn't start with expected prefix of %s", username, expectedPrefix)
 	}
@@ -53,18 +53,18 @@ func TestGenUsernameUsergroupname(t *testing.T) {
 
 func TestGenUsernameFieldsReallyLong(t *testing.T) {
 	displayName := "displayNamedisplayNamedisplayName"
-	userGroupName := "userGroupNameuserGroupNameuserGroupName"
+	roleName := "roleNameroleNameroleName"
 
 	// example of an expected result:
-	// userGroupNameuserGroupNameuserGroupName-displayNamedisplay-e8dbe
-	username, err := GenerateUsername(displayName, userGroupName)
+	// roleNameroleNameroleName-displayNamedisplay-e8dbe
+	username, err := GenerateUsername(displayName, roleName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(username) > maxLength {
+	if len(username) > usernameMaxLength {
 		t.Fatalf("length of %s is %d, which is greater than the max length", username, len(username))
 	}
-	expectedPrefix := userGroupName + "-"
+	expectedPrefix := roleName + "-"
 	if !strings.HasPrefix(username, expectedPrefix) {
 		t.Fatalf("%s doesn't start with expected prefix of %s", username, expectedPrefix)
 	}
@@ -76,18 +76,18 @@ func TestGenUsernameFieldsReallyLong(t *testing.T) {
 
 func TestGenUsernameFieldsReallyShort(t *testing.T) {
 	displayName := "d"
-	userGroupName := "u"
+	roleName := "u"
 
 	// example of an expected result:
 	// u-d-e10aeb204a886cf414b25e900f6b4419
-	username, err := GenerateUsername(displayName, userGroupName)
+	username, err := GenerateUsername(displayName, roleName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(username) > maxLength {
+	if len(username) > usernameMaxLength {
 		t.Fatalf("length of %s is %d, which is greater than the max length", username, len(username))
 	}
-	expectedPrefix := userGroupName + "-"
+	expectedPrefix := roleName + "-"
 	if !strings.HasPrefix(username, expectedPrefix) {
 		t.Fatalf("%s doesn't start with expected prefix of %s", username, expectedPrefix)
 	}

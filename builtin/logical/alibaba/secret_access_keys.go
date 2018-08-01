@@ -31,7 +31,7 @@ func secretAccessKeys() *framework.Secret {
 }
 
 func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	userGroupName := data.Get("user_group_name").(string)
+	userGroupName := data.Get("name").(string)
 
 	resp := &logical.Response{Secret: req.Secret}
 
@@ -59,13 +59,13 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framew
 		return nil, fmt.Errorf("secret is missing username internal data")
 	}
 
-	userGroupNameRaw, ok := req.Secret.InternalData["user_group_name"]
+	roleNameRaw, ok := req.Secret.InternalData["role_name"]
 	if !ok {
-		return nil, fmt.Errorf("secret is missing user_group_name internal data")
+		return nil, fmt.Errorf("secret is missing role_name internal data")
 	}
-	userGroupName, ok := userGroupNameRaw.(string)
+	roleName, ok := roleNameRaw.(string)
 	if !ok {
-		return nil, fmt.Errorf("secret is missing user_group_name internal data")
+		return nil, fmt.Errorf("secret is missing role_name internal data")
 	}
 
 	accessKeyIDRaw, ok := req.Secret.InternalData["access_key_id"]
@@ -82,11 +82,12 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framew
 		return nil, err
 	}
 
-	client, err := ramClient(creds.AccessKey, creds.SecretKey)
+	client, err := getRAMClient(creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
 
+	// TODO this all needs to be updated now that we have 3 methods, but get them working first
 	/*
 		The most important thing for us to delete is the access key, as it's what
 		we've shared with the caller to use as credentials, so let's do that first.
@@ -98,7 +99,7 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framew
 	/*
 		Now let's back that user out of the user group.
 	*/
-	if err := removeFromGroup(client, userName, userGroupName); err != nil {
+	if err := removeFromGroup(client, userName, roleName); err != nil {
 		return nil, err
 	}
 

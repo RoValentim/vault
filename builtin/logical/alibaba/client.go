@@ -4,6 +4,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/sts"
 )
 
 const (
@@ -23,9 +24,16 @@ const (
 	region = "us-east-1"
 )
 
-func ramClient(key, secret string) (*ram.Client, error) {
+func getRAMClient(key, secret string) (*ram.Client, error) {
 	config := sdk.NewConfig()
 	config.Scheme = scheme
 	cred := credentials.NewAccessKeyCredential(key, secret)
 	return ram.NewClientWithOptions(region, config, cred)
+}
+
+// TODO need to test this client IRL
+func getSTSClient() (*sts.Client, error) {
+	config := sdk.NewConfig()
+	config.Scheme = scheme
+	return sts.NewClientWithOptions(region, config, nil)
 }

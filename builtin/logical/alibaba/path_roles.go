@@ -2,9 +2,12 @@ package alibaba
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/go-errors/errors"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -34,11 +37,27 @@ func pathListRoles() *framework.Path {
 
 func (b *backend) pathRole() *framework.Path {
 	return &framework.Path{
-		Pattern: "role/" + framework.GenericNameRegex("user_group_name"),
+		Pattern: "role/" + framework.GenericNameRegex("name"),
 		Fields: map[string]*framework.FieldSchema{
-			"user_group_name": {
+			"name": {
 				Type:        framework.TypeString,
 				Description: "Name of the user group",
+			},
+			"role_arn": {
+				Type: framework.TypeString,
+				Description: `ARN of the role to be assumed. If provideded, inline_policies and 
+remote_policies should be blank.`,
+			},
+			"inline_policies": {
+				// TODO this type seems like it might be wrong because there will be commas inside each field's data
+				Type:        framework.TypeCommaStringSlice,
+				Description: "JSON of policies to be dynamically applied to users of this role.",
+			},
+			"remote_policies": {
+				// TODO this type seems like it might be wrong because there will be commas inside each field's data
+				Type: framework.TypeCommaStringSlice,
+				Description: `The name and type of each remote policy to be applied. 
+Example: "name:AliyunRDSReadOnlyAccess,type:System".`,
 			},
 			"ttl": {
 				Type: framework.TypeDurationSecond,
@@ -62,18 +81,73 @@ to 0, in which case the value will fallback to the system/mount defaults.`,
 }
 
 func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	userGroupName := data.Get("user_group_name").(string)
+	roleName := data.Get("name").(string)
 
-	role, err := readRole(ctx, req.Storage, userGroupName)
+	role, err := readRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
 	if role == nil && req.Operation == logical.UpdateOperation {
-		return nil, fmt.Errorf("no role found to update for %s", userGroupName)
+		return nil, fmt.Errorf("no role found to update for %s", roleName)
 	} else if role == nil {
 		role = &roleEntry{}
 	}
 
+	if raw, ok := data.GetOk("role_arn"); ok {
+		role.RoleARN = raw.(string)
+	}
+	if raw, ok := data.GetOk("inline_policies"); ok {
+		strPolicies := raw.([]string)
+
+		// If any policies were set inline before, we need to clear them and consider
+		// these the new ones.
+		role.InlinePolicies = make([]*ram.Policy, len(strPolicies))
+		for i, strPolicy := range strPolicies {
+			policy := &ram.Policy{}
+			if err := json.Unmarshal([]byte(strPolicy), policy); err != nil {
+				return nil, err
+			}
+			// TODO should I require that policy name and policy type are populated?
+			// it would be helpful for creating policies but what does the create policies API look like?
+			role.InlinePolicies[i] = policy
+		}
+
+	}
+	if raw, ok := data.GetOk("remote_policies"); ok {
+		strPolicies := raw.([]string)
+
+		// If any policies were set inline before, we need to clear them and consider
+		// these the new ones.
+		role.RemotePolicies = make([]*remotePolicy, len(strPolicies))
+		// Each strPolicy will look like this:
+		// "name:AliyunRDSReadOnlyAccess,type:System"
+		// TODO this seems like it could be simpler
+		for i, strPolicy := range strPolicies {
+			policy := &remotePolicy{}
+			outerFields := strings.Split(strPolicy, ",")
+			for _, outerField := range outerFields {
+				kvFields := strings.Split(outerField, ":")
+				if len(kvFields) != 2 {
+					return nil, fmt.Errorf("couldn't parse %s", outerField)
+				}
+				switch kvFields[0] {
+				case "name":
+					policy.Name = kvFields[1]
+				case "type":
+					policy.Type = kvFields[1]
+				default:
+					return nil, fmt.Errorf("unrecognized key in %s: %s", outerField, kvFields[0])
+				}
+			}
+			if policy.Name == "" {
+				return nil, fmt.Errorf("policy name is required in %s", strPolicy)
+			}
+			if policy.Type == "" {
+				return nil, fmt.Errorf("policy type is required in %s", strPolicy)
+			}
+			role.RemotePolicies[i] = policy
+		}
+	}
 	if raw, ok := data.GetOk("ttl"); ok {
 		role.TTL = time.Duration(raw.(int)) * time.Second
 	}
@@ -85,7 +159,7 @@ func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Re
 		return nil, errors.New("ttl exceeds max_ttl")
 	}
 
-	entry, err := logical.StorageEntryJSON("role/"+userGroupName, role)
+	entry, err := logical.StorageEntryJSON("role/"+roleName, role)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +176,7 @@ func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Re
 }
 
 func operationRoleRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	role, err := readRole(ctx, req.Storage, data.Get("user_group_name").(string))
+	role, err := readRole(ctx, req.Storage, data.Get("name").(string))
 	if err != nil {
 		return nil, err
 	}
@@ -111,14 +185,17 @@ func operationRoleRead(ctx context.Context, req *logical.Request, data *framewor
 	}
 	return &logical.Response{
 		Data: map[string]interface{}{
-			"ttl":     role.TTL / time.Second,
-			"max_ttl": role.MaxTTL / time.Second,
+			"role_arn":        role.RoleARN,
+			"remote_policies": role.RemotePolicies, // TODO what do these two look like in JSON? CLI?
+			"inline_policies": role.InlinePolicies,
+			"ttl":             role.TTL / time.Second,
+			"max_ttl":         role.MaxTTL / time.Second,
 		},
 	}, nil
 }
 
 func operationRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	if err := req.Storage.Delete(ctx, "role/"+data.Get("user_group_name").(string)); err != nil {
+	if err := req.Storage.Delete(ctx, "role/"+data.Get("name").(string)); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -148,8 +225,34 @@ func readRole(ctx context.Context, s logical.Storage, roleName string) (*roleEnt
 }
 
 type roleEntry struct {
-	TTL    time.Duration `json:"ttl"`
-	MaxTTL time.Duration `json:"max_ttl"`
+	RoleARN        string          `json:"role_arn"` // TODO arn as an object?
+	RemotePolicies []*remotePolicy `json:"remote_policies"`
+	InlinePolicies []*ram.Policy   `json:"inline_policies"`
+	TTL            time.Duration   `json:"ttl"`
+	MaxTTL         time.Duration   `json:"max_ttl"`
+}
+
+// TODO if this is only used once, it shouldn't be here, even though I like it this way
+func (r *roleEntry) Validate() error {
+	// TODO parse the arn to validate it?
+	if r.RoleARN != "" {
+		if len(r.RemotePolicies) > 0 {
+			return errors.New("remote_policies must be blank when an arn is present")
+		}
+		if len(r.InlinePolicies) > 0 {
+			return errors.New("inline_policies must be blank when an arn is present")
+		}
+	} else {
+		if len(r.InlinePolicies)+len(r.RemotePolicies) == 0 {
+			return errors.New("must include an arn, or at least one of inline_policies or remote_policies")
+		}
+	}
+	return nil
+}
+
+type remotePolicy struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // TODO go through these descriptions
