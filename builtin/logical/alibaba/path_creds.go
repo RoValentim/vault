@@ -7,7 +7,6 @@ import (
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/sts"
-	"github.com/hashicorp/vault/builtin/logical/alibaba/util"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -36,7 +35,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		return nil, err
 	}
 
-	if role.RoleARN != "" {
+	if role.isAssumeRoleMethod() {
 		stsClient, err := getSTSClient()
 		if err != nil {
 			return nil, err
@@ -56,7 +55,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		}, map[string]interface{}{
 			// TODO am I using all these things?
 			// TODO also, this doesn't have a username so this needs to be handled during revocation
-			"role_name":     roleName,
+			"role_name":     roleName, // in use
 			"access_key_id": assumeRoleResp.Credentials.AccessKeyId,
 		})
 
@@ -77,23 +76,47 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	if err != nil {
 		return nil, err
 	}
-	userName, err := util.GenerateUsername(req.DisplayName, roleName)
-	if err != nil {
-		return nil, err
-	}
+	userName := generateUsername(req.DisplayName, roleName)
+
+	/*
+		Now we're embarking upon a multi-step process that could fail at any time.
+		If it does, let's do our best to clean up after ourselves. Success will be
+		our flag at the end indicating whether we should leave things be, or clean
+		things up, based on how we exit this method. Since defer statements are
+		last-in-first-out, it will perfectly reverse the order of everything just
+		like we need.
+	*/
+	success := false
+
 	createUserReq := ram.CreateCreateUserRequest()
 	createUserReq.UserName = userName
 	createUserReq.DisplayName = userName
-	if _, err := ramClient.CreateUser(createUserReq); err != nil {
+	createUserResp, err := ramClient.CreateUser(createUserReq)
+	if err != nil {
 		return nil, err
 	}
-
-	for _, inlinePolicy := range role.InlinePolicies {
-		policyName, err := util.GeneratePolicyName(userName, inlinePolicy)
-		if err != nil {
-			return nil, err
+	defer func() {
+		if !success {
+			if err := deleteUser(ramClient, createUserResp.User.UserName); err != nil {
+				if b.Logger().IsError() {
+					b.Logger().Error(fmt.Sprintf("unable to delete user %s", userName), err)
+				}
+			}
 		}
-		policyDoc, err := json.Marshal(inlinePolicy)
+	}()
+
+	// We need to gather up all the names and types of the remote policies we're
+	// about to create so we can detach and delete them later.
+	inlinePolicies := make([]*remotePolicy, len(role.InlinePolicies))
+
+	for i, inlinePolicy := range role.InlinePolicies {
+
+		// By combining the userName with the particular policy's UUID,
+		// it'll be possible to figure out who this policy is for and which one
+		// it is using the policy name alone.
+		policyName := userName + "-" + inlinePolicy.UUID
+
+		policyDoc, err := json.Marshal(inlinePolicy.PolicyDocument)
 		if err != nil {
 			return nil, err
 		}
@@ -107,6 +130,24 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 			return nil, err
 		}
 
+		inlinePolicies[i] = &remotePolicy{
+			Name: createPolicyResp.Policy.PolicyName,
+			Type: createPolicyResp.Policy.PolicyType,
+		}
+
+		// This defer is in this loop on purpose. It wouldn't be appropriate
+		// to call the defer on each iteration, because we won't know until
+		// afterwards whether we've been successful.
+		defer func() {
+			if !success {
+				if err := deletePolicy(ramClient, createPolicyResp.Policy.PolicyName); err != nil {
+					if b.Logger().IsError() {
+						b.Logger().Error(fmt.Sprintf("unable to delete policy %s", createPolicyResp.Policy.PolicyName), err)
+					}
+				}
+			}
+		}()
+
 		attachPolReq := ram.CreateAttachPolicyToUserRequest()
 		attachPolReq.UserName = userName
 		attachPolReq.PolicyName = createPolicyResp.Policy.PolicyName
@@ -114,9 +155,18 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		if _, err := ramClient.AttachPolicyToUser(attachPolReq); err != nil {
 			return nil, err
 		}
+		// This defer is also in this loop on purpose.
+		defer func() {
+			if !success {
+				if err := detachPolicy(ramClient, attachPolReq.UserName, attachPolReq.PolicyName, attachPolReq.PolicyType); err != nil {
+					if b.Logger().IsError() {
+						b.Logger().Error(fmt.Sprintf("unable to detach policy name:%s, type:%s from user:%s", attachPolReq.PolicyName, attachPolReq.PolicyType, attachPolReq.UserName))
+					}
+				}
+			}
+		}()
 	}
 
-	// TODO maybe I should make remote policies just be []*ram.Policy so I can iterate them all together
 	for _, remotePol := range role.RemotePolicies {
 		attachPolReq := ram.CreateAttachPolicyToUserRequest()
 		attachPolReq.UserName = userName
@@ -125,26 +175,39 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		if _, err := ramClient.AttachPolicyToUser(attachPolReq); err != nil {
 			return nil, err
 		}
+		// This defer is also in this loop on purpose.
+		defer func() {
+			if !success {
+				if err := detachPolicy(ramClient, attachPolReq.UserName, attachPolReq.PolicyName, attachPolReq.PolicyType); err != nil {
+					if b.Logger().IsError() {
+						b.Logger().Error(fmt.Sprintf("unable to detach policy name:%s, type:%s from user:%s", attachPolReq.PolicyName, attachPolReq.PolicyType, attachPolReq.UserName))
+					}
+				}
+			}
+		}()
 	}
 
 	accessKeyReq := ram.CreateCreateAccessKeyRequest()
 	accessKeyReq.UserName = userName
 	accessKeyResp, err := ramClient.CreateAccessKey(accessKeyReq)
 	if err != nil {
-		// Try to back out the user we created.
-		// We have to remove them from the group first.
-		removeFromGroup(ramClient, userName, roleName)
-		deleteUser(ramClient, userName)
 		return nil, err
 	}
+	// We don't need a defer here to clean this up because there are
+	// no further errors returned below. However, if that ever changed,
+	// we would need to add a defer here. Likewise, it's safe to mark
+	// success because there are not further possible errors.
+	success = true
+
 	resp := b.Secret(secretType).Response(map[string]interface{}{
 		"access_key": accessKeyResp.AccessKey.AccessKeyId,
 		"secret_key": accessKeyResp.AccessKey.AccessKeySecret,
 	}, map[string]interface{}{
-		// TODO am I using all these things?
-		"username":      userName,
-		"role_name":     roleName,
-		"access_key_id": accessKeyResp.AccessKey.AccessKeyId,
+		"username":        userName,
+		"role_name":       roleName,
+		"access_key_id":   accessKeyResp.AccessKey.AccessKeyId,
+		"remote_policies": role.RemotePolicies,
+		"inline_policies": inlinePolicies,
 	})
 
 	if role.TTL != 0 {

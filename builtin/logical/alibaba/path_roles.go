@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/go-errors/errors"
+	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -49,12 +49,10 @@ func (b *backend) pathRole() *framework.Path {
 remote_policies should be blank.`,
 			},
 			"inline_policies": {
-				// TODO this type seems like it might be wrong because there will be commas inside each field's data
-				Type:        framework.TypeCommaStringSlice,
+				Type:        framework.TypeString,
 				Description: "JSON of policies to be dynamically applied to users of this role.",
 			},
 			"remote_policies": {
-				// TODO this type seems like it might be wrong because there will be commas inside each field's data
 				Type: framework.TypeCommaStringSlice,
 				Description: `The name and type of each remote policy to be applied. 
 Example: "name:AliyunRDSReadOnlyAccess,type:System".`,
@@ -69,6 +67,7 @@ to 0, in which case the value will fallback to the system/mount defaults.`,
 				Description: "The maximum allowed lifetime of tokens issued using this role.",
 			},
 		},
+		ExistenceCheck: b.operationRoleExistenceCheck,
 		Callbacks: map[logical.Operation]framework.OperationFunc{
 			logical.CreateOperation: b.operationRoleCreateUpdate,
 			logical.UpdateOperation: b.operationRoleCreateUpdate,
@@ -78,6 +77,14 @@ to 0, in which case the value will fallback to the system/mount defaults.`,
 		HelpSynopsis:    pathRolesHelpSyn,
 		HelpDescription: pathRolesHelpDesc,
 	}
+}
+
+func (b *backend) operationRoleExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
+	entry, err := readRole(ctx, req.Storage, data.Get("name").(string))
+	if err != nil {
+		return false, err
+	}
+	return entry != nil, nil
 }
 
 func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
@@ -97,38 +104,43 @@ func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Re
 		role.RoleARN = raw.(string)
 	}
 	if raw, ok := data.GetOk("inline_policies"); ok {
-		strPolicies := raw.([]string)
+		policyDocsStr := raw.(string)
 
-		// If any policies were set inline before, we need to clear them and consider
-		// these the new ones.
-		role.InlinePolicies = make([]*ram.Policy, len(strPolicies))
-		for i, strPolicy := range strPolicies {
-			policy := &ram.Policy{}
-			if err := json.Unmarshal([]byte(strPolicy), policy); err != nil {
-				return nil, err
-			}
-			// TODO should I require that policy name and policy type are populated?
-			// it would be helpful for creating policies but what does the create policies API look like?
-			role.InlinePolicies[i] = policy
+		var policyDocs []map[string]interface{}
+		if err := json.Unmarshal([]byte(policyDocsStr), &policyDocs); err != nil {
+			return nil, err
 		}
 
+		// If any inline policies were set before, we need to clear them and consider
+		// these the new ones.
+		role.InlinePolicies = make([]*inlinePolicy, len(policyDocs))
+
+		for i, policyDoc := range policyDocs {
+			uid, err := uuid.GenerateUUID()
+			if err != nil {
+				return nil, err
+			}
+			uid = strings.Replace(uid, "-", "", -1)
+			role.InlinePolicies[i] = &inlinePolicy{
+				UUID:           uid,
+				PolicyDocument: policyDoc,
+			}
+		}
 	}
 	if raw, ok := data.GetOk("remote_policies"); ok {
 		strPolicies := raw.([]string)
 
-		// If any policies were set inline before, we need to clear them and consider
+		// If any remote policies were set before, we need to clear them and consider
 		// these the new ones.
 		role.RemotePolicies = make([]*remotePolicy, len(strPolicies))
-		// Each strPolicy will look like this:
-		// "name:AliyunRDSReadOnlyAccess,type:System"
-		// TODO this seems like it could be simpler
+
 		for i, strPolicy := range strPolicies {
 			policy := &remotePolicy{}
-			outerFields := strings.Split(strPolicy, ",")
-			for _, outerField := range outerFields {
-				kvFields := strings.Split(outerField, ":")
+			kvPairs := strings.Split(strPolicy, ",")
+			for _, kvPair := range kvPairs {
+				kvFields := strings.Split(kvPair, ":")
 				if len(kvFields) != 2 {
-					return nil, fmt.Errorf("couldn't parse %s", outerField)
+					return nil, fmt.Errorf("unable to recognize pair in %s", kvPair)
 				}
 				switch kvFields[0] {
 				case "name":
@@ -136,7 +148,7 @@ func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Re
 				case "type":
 					policy.Type = kvFields[1]
 				default:
-					return nil, fmt.Errorf("unrecognized key in %s: %s", outerField, kvFields[0])
+					return nil, fmt.Errorf("invalid key: %s", kvFields[0])
 				}
 			}
 			if policy.Name == "" {
@@ -186,7 +198,7 @@ func operationRoleRead(ctx context.Context, req *logical.Request, data *framewor
 	return &logical.Response{
 		Data: map[string]interface{}{
 			"role_arn":        role.RoleARN,
-			"remote_policies": role.RemotePolicies, // TODO what do these two look like in JSON? CLI?
+			"remote_policies": role.RemotePolicies,
 			"inline_policies": role.InlinePolicies,
 			"ttl":             role.TTL / time.Second,
 			"max_ttl":         role.MaxTTL / time.Second,
@@ -225,17 +237,20 @@ func readRole(ctx context.Context, s logical.Storage, roleName string) (*roleEnt
 }
 
 type roleEntry struct {
-	RoleARN        string          `json:"role_arn"` // TODO arn as an object?
+	RoleARN        string          `json:"role_arn"`
 	RemotePolicies []*remotePolicy `json:"remote_policies"`
-	InlinePolicies []*ram.Policy   `json:"inline_policies"`
+	InlinePolicies []*inlinePolicy `json:"inline_policies"`
 	TTL            time.Duration   `json:"ttl"`
 	MaxTTL         time.Duration   `json:"max_ttl"`
 }
 
+func (r *roleEntry) isAssumeRoleMethod() bool {
+	return r.RoleARN != ""
+}
+
 // TODO if this is only used once, it shouldn't be here, even though I like it this way
 func (r *roleEntry) Validate() error {
-	// TODO parse the arn to validate it?
-	if r.RoleARN != "" {
+	if r.isAssumeRoleMethod() {
 		if len(r.RemotePolicies) > 0 {
 			return errors.New("remote_policies must be blank when an arn is present")
 		}
@@ -250,9 +265,21 @@ func (r *roleEntry) Validate() error {
 	return nil
 }
 
+// Policies don't have ARNs and instead, their unique combination of their name and type comprise
+// their unique identifier.
 type remotePolicy struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+type inlinePolicy struct {
+	// UUID is used in naming the policy. The policy document has no fields
+	// that would reliably be there and make a beautiful, human-readable name.
+	// So instead, we generate a UUID for it and use that in the policy name,
+	// which is likewise returned when roles are read so policy names can be
+	// tied back to which policy document they're for.
+	UUID           string                 `json:"hash"`
+	PolicyDocument map[string]interface{} `json:"policy_document"`
 }
 
 // TODO go through these descriptions

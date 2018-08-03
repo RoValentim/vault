@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
-	"github.com/hashicorp/vault/builtin/logical/alibaba/util"
 )
 
 func TestStuffWithTheClient(t *testing.T) {
@@ -17,12 +16,9 @@ func TestStuffWithTheClient(t *testing.T) {
 	}
 
 	displayName := "becca"
-	userGroupName := "developers"
+	roleName := "developers"
 
-	userName, err := util.GenerateUsername(displayName, userGroupName)
-	if err != nil {
-		panic(err)
-	}
+	userName := generateUsername(displayName, roleName)
 
 	createUserReq := ram.CreateCreateUserRequest()
 	createUserReq.UserName = userName
@@ -33,7 +29,7 @@ func TestStuffWithTheClient(t *testing.T) {
 
 	addUserReq := ram.CreateAddUserToGroupRequest()
 	addUserReq.UserName = userName
-	addUserReq.GroupName = userGroupName
+	addUserReq.GroupName = roleName
 	if _, err := client.AddUserToGroup(addUserReq); err != nil {
 		panic(err)
 	}
@@ -66,7 +62,7 @@ func TestStuffWithTheClient(t *testing.T) {
 
 	removeUserReq := ram.CreateRemoveUserFromGroupRequest()
 	removeUserReq.UserName = userName
-	removeUserReq.GroupName = userGroupName
+	removeUserReq.GroupName = roleName
 	if _, err := client.RemoveUserFromGroup(removeUserReq); err != nil {
 		panic(err)
 	}

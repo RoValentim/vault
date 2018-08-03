@@ -22,10 +22,8 @@ func pathConfig() *framework.Path {
 			},
 		},
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			// There's no update operation because you would never need to update a secret_key
-			// without also needing to update the access_key, thus replacing the entire config.
-			// So, each time you need to change the config you need to create an entirely new one.
 			logical.CreateOperation: operationConfigCreate,
+			logical.UpdateOperation: operationConfigCreate,
 			logical.ReadOperation:   operationConfigRead,
 			logical.DeleteOperation: operationConfigDelete,
 		},
@@ -35,6 +33,8 @@ func pathConfig() *framework.Path {
 }
 
 func operationConfigCreate(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	// Access keys and secrets are generated in pairs. You would never need
+	// to update one or the other alone, always both together.
 	accessKey := ""
 	if accessKeyIfc, ok := data.GetOk("access_key"); ok {
 		accessKey = accessKeyIfc.(string)

@@ -37,3 +37,44 @@ func getSTSClient() (*sts.Client, error) {
 	config.Scheme = scheme
 	return sts.NewClientWithOptions(region, config, nil)
 }
+
+func deleteAccessKey(client *ram.Client, userName, accessKeyID string) error {
+	req := ram.CreateDeleteAccessKeyRequest()
+	req.UserAccessKeyId = accessKeyID
+	req.UserName = userName
+	if _, err := client.DeleteAccessKey(req); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deletePolicy(client *ram.Client, policyName string) error {
+	req := ram.CreateDeletePolicyRequest()
+	req.PolicyName = policyName
+	if _, err := client.DeletePolicy(req); err != nil {
+		return err
+	}
+	return nil
+}
+
+func detachPolicy(client *ram.Client, userName, policyName, policyType string) error {
+	req := ram.CreateDetachPolicyFromUserRequest()
+	req.UserName = userName
+	req.PolicyName = policyName
+	req.PolicyType = policyType
+	if _, err := client.DetachPolicyFromUser(req); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Note: deleteUser will fail if the user is presently associated with anything
+// in Alibaba.
+func deleteUser(client *ram.Client, userName string) error {
+	req := ram.CreateDeleteUserRequest()
+	req.UserName = userName
+	if _, err := client.DeleteUser(req); err != nil {
+		return err
+	}
+	return nil
+}
