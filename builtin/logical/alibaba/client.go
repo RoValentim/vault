@@ -32,10 +32,10 @@ func getRAMClient(key, secret string) (*ram.Client, error) {
 }
 
 // TODO need to test this client IRL
-func getSTSClient() (*sts.Client, error) {
+func getSTSClient(key, secret string) (*sts.Client, error) {
 	config := sdk.NewConfig()
 	config.Scheme = scheme
-	return sts.NewClientWithOptions(region, config, nil)
+	return sts.NewClientWithOptions(region, config, credentials.NewAccessKeyCredential(key, secret))
 }
 
 func deleteAccessKey(client *ram.Client, userName, accessKeyID string) error {

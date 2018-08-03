@@ -3,6 +3,7 @@ package alibaba
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
@@ -34,15 +35,29 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	if err != nil {
 		return nil, err
 	}
+	if role == nil {
+		// Attempting to read a role that doesn't exist.
+		return nil, nil
+	}
+
+	creds, err := readCredentials(ctx, req.Storage)
+	if err != nil {
+		return nil, err
+	}
+	if creds == nil {
+		return nil, errors.New("unable to create secret because no credentials are configured")
+	}
+
+	userName := generateUsername(req.DisplayName, roleName)
 
 	if role.isAssumeRoleMethod() {
-		stsClient, err := getSTSClient()
+		stsClient, err := getSTSClient(creds.AccessKey, creds.SecretKey)
 		if err != nil {
 			return nil, err
 		}
 		assumeRoleReq := sts.CreateAssumeRoleRequest()
 		assumeRoleReq.RoleArn = role.RoleARN
-		assumeRoleReq.RoleSessionName = "testing" // TODO obviously needs something better
+		assumeRoleReq.RoleSessionName = userName
 		assumeRoleResp, err := stsClient.AssumeRole(assumeRoleReq)
 		if err != nil {
 			return nil, err
@@ -68,15 +83,10 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		return resp, nil
 	}
 
-	creds, err := readCredentials(ctx, req.Storage)
-	if err != nil {
-		return nil, err
-	}
 	ramClient, err := getRAMClient(creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
-	userName := generateUsername(req.DisplayName, roleName)
 
 	/*
 		Now we're embarking upon a multi-step process that could fail at any time.

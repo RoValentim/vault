@@ -2,7 +2,7 @@ package alibaba
 
 import (
 	"context"
-
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/vault/logical"
@@ -31,13 +31,18 @@ func secretAccessKeys() *framework.Secret {
 }
 
 func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	userGroupName := data.Get("name").(string)
+	// TODO why do we get this from internal data on the secret in one case, and field data in the other?
+	// how do these methods really work?
+	roleName := data.Get("name").(string)
 
 	resp := &logical.Response{Secret: req.Secret}
 
-	role, err := readRole(ctx, req.Storage, userGroupName)
+	role, err := readRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
+	}
+	if role == nil {
+		// TODO what should I do?
 	}
 	if role.TTL != 0 {
 		resp.Secret.TTL = role.TTL
@@ -48,7 +53,7 @@ func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *fram
 	return resp, nil
 }
 
-func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
 
 	roleName, err := getStringValue(req.Secret.InternalData, "role_name")
 	if err != nil {
@@ -59,6 +64,10 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framew
 	if err != nil {
 		return nil, err
 	}
+	if role == nil {
+		// TODO arg, I don't want to fail here, I want to still revoke this. What should I do?
+		// can I scrape by without the role?
+	}
 
 	if role.isAssumeRoleMethod() {
 		// TODO - this and return
@@ -67,6 +76,10 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framew
 	creds, err := readCredentials(ctx, req.Storage)
 	if err != nil {
 		return nil, err
+	}
+	if creds == nil {
+		// TODO this sucks..... what if I also kept the key and secret on the internal data and tried that?
+		return nil, errors.New("unable to delete access key because no credentials are configured")
 	}
 	ramClient, err := getRAMClient(creds.AccessKey, creds.SecretKey)
 	if err != nil {
