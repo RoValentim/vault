@@ -74,13 +74,18 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		}, map[string]interface{}{
 			"is_sts": true,
 		})
-
 		if role.TTL != 0 {
 			resp.Secret.TTL = role.TTL
 		}
 		if role.MaxTTL != 0 {
 			resp.Secret.MaxTTL = role.MaxTTL
 		}
+
+		// Set the secret TTL to appropriately match the expiration of the token.
+		resp.Secret.TTL = expiration.Sub(time.Now())
+
+		// STS are purposefully short-lived and aren't renewable.
+		resp.Secret.Renewable = false
 		return resp, nil
 	}
 
@@ -218,12 +223,17 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	return resp, nil
 }
 
+// The max length of a username per AliCloud is 64.
 func generateUsername(displayName, roleName string) string {
 	username := fmt.Sprintf("%s-%s-", displayName, roleName)
-	if len(username) > 48 {
-		username = username[0:48]
+
+	// The time and random number take up to 15 more in length, so if the username
+	// is too long we need to trim it.
+	if len(username) > 49 {
+		username = username[0:49]
 	}
-	return fmt.Sprintf("%s%d-%d", username, time.Now().Unix(), rand.Int31n(10000))
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return fmt.Sprintf("%s%d-%d", username, time.Now().Unix(), r.Intn(10000))
 }
 
 const pathCredsHelpSyn = `

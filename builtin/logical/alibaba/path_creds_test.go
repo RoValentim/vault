@@ -1,4 +1,20 @@
 package alibaba
 
-// TODO write username generation tests here
-// TODO be absolutely sure the policy names will be cool too
+import (
+	"testing"
+)
+
+func TestGenerateUsername(t *testing.T) {
+	result := generateUsername("displayName", "roleName")
+	if len(result) > 64 {
+		t.Fatal("too long: " + result)
+	}
+	result = generateUsername("displayNamedisplayNamedisplayNamedisplayNamedisplayNamedisplayNamedisplayNamedisplayNamedisplayNamedisplayName", "roleName")
+	if len(result) > 64 {
+		t.Fatal("too long: " + result)
+	}
+	result = generateUsername("displayName", "roleNameroleNameroleNameroleNameroleNameroleNameroleNameroleNameroleNameroleName")
+	if len(result) > 64 {
+		t.Fatal("too long: " + result)
+	}
+}
