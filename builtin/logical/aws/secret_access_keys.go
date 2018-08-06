@@ -280,7 +280,6 @@ func (b *backend) secretAccessKeysRenew(ctx context.Context, req *logical.Reques
 }
 
 func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-
 	// STS cleans up after itself so we can skip this if is_sts internal data
 	// element set to true. If is_sts is not set, assumes old version
 	// and defaults to the IAM approach.

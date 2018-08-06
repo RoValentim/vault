@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hashicorp/vault/builtin/logical/alibaba/clients"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -19,7 +20,6 @@ func secretAccessKeys() *framework.Secret {
 				Type:        framework.TypeString,
 				Description: "Access Key",
 			},
-
 			"secret_key": {
 				Type:        framework.TypeString,
 				Description: "Secret Key",
@@ -31,29 +31,17 @@ func secretAccessKeys() *framework.Secret {
 }
 
 func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	// TODO why do we get this from internal data on the secret in one case, and field data in the other?
-	// how do these methods really work?
-	roleName := data.Get("name").(string)
-
-	resp := &logical.Response{Secret: req.Secret}
-
-	role, err := readRole(ctx, req.Storage, roleName)
-	if err != nil {
-		return nil, err
+	// STS already has a lifetime, and we don't support renewing it
+	isSTSRaw, ok := req.Secret.InternalData["is_sts"]
+	if ok {
+		isSTS, ok := isSTSRaw.(bool)
+		if !ok {
+			return nil, fmt.Errorf("unable to read is_sts: %+v", isSTSRaw)
+		}
+		if isSTS {
+			return nil, nil
+		}
 	}
-	if role == nil {
-		// TODO what should I do?
-	}
-	if role.TTL != 0 {
-		resp.Secret.TTL = role.TTL
-	}
-	if role.MaxTTL != 0 {
-		resp.Secret.MaxTTL = role.MaxTTL
-	}
-	return resp, nil
-}
-
-func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
 
 	roleName, err := getStringValue(req.Secret.InternalData, "role_name")
 	if err != nil {
@@ -65,12 +53,31 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 		return nil, err
 	}
 	if role == nil {
-		// TODO arg, I don't want to fail here, I want to still revoke this. What should I do?
-		// can I scrape by without the role?
+		role = &roleEntry{}
 	}
 
-	if role.isAssumeRoleMethod() {
-		// TODO - this and return
+	resp := &logical.Response{Secret: req.Secret}
+	if role.TTL != 0 {
+		resp.Secret.TTL = role.TTL
+	}
+	if role.MaxTTL != 0 {
+		resp.Secret.MaxTTL = role.MaxTTL
+	}
+	return resp, nil
+}
+
+func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	// STS cleans up after itself so we can skip this if is_sts internal data
+	// element set to true.
+	isSTSRaw, ok := req.Secret.InternalData["is_sts"]
+	if ok {
+		isSTS, ok := isSTSRaw.(bool)
+		if !ok {
+			return nil, fmt.Errorf("unable to read is_sts: %+v", isSTSRaw)
+		}
+		if isSTS {
+			return nil, nil
+		}
 	}
 
 	creds, err := readCredentials(ctx, req.Storage)
@@ -78,10 +85,9 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 		return nil, err
 	}
 	if creds == nil {
-		// TODO this sucks..... what if I also kept the key and secret on the internal data and tried that?
 		return nil, errors.New("unable to delete access key because no credentials are configured")
 	}
-	ramClient, err := getRAMClient(creds.AccessKey, creds.SecretKey)
+	client, err := clients.NewRAMClient(creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +103,7 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 	}
 
 	// Delete the access key first so if all else fails, the access key is revoked.
-	if err := deleteAccessKey(ramClient, userName, accessKeyID); err != nil {
+	if err := client.DeleteAccessKey(userName, accessKeyID); err != nil {
 		return nil, err
 	}
 
@@ -108,10 +114,10 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 		return nil, err
 	}
 	for _, inlinePolicy := range inlinePolicies {
-		if err := detachPolicy(ramClient, userName, inlinePolicy.Name, inlinePolicy.Type); err != nil {
+		if err := client.DetachPolicy(userName, inlinePolicy.Name, inlinePolicy.Type); err != nil {
 			return nil, err
 		}
-		if err := deletePolicy(ramClient, inlinePolicy.Name); err != nil {
+		if err := client.DeletePolicy(inlinePolicy.Name); err != nil {
 			return nil, err
 		}
 	}
@@ -123,7 +129,7 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 		return nil, err
 	}
 	for _, remotePolicy := range remotePolicies {
-		if err := detachPolicy(ramClient, userName, remotePolicy.Name, remotePolicy.Type); err != nil {
+		if err := client.DetachPolicy(userName, remotePolicy.Name, remotePolicy.Type); err != nil {
 			return nil, err
 		}
 	}
@@ -133,7 +139,7 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 	// manually created for them in their console that Vault didn't know about, or some other
 	// thing had been created. Luckily the err returned is pretty explanatory so that will
 	// help with debugging.
-	if err := deleteUser(ramClient, userName); err != nil {
+	if err := client.DeleteUser(userName); err != nil {
 		return nil, err
 	}
 	return nil, nil

@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
+	"time"
 
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/sts"
+	"github.com/hashicorp/vault/builtin/logical/alibaba/clients"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -50,15 +51,18 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 
 	userName := generateUsername(req.DisplayName, roleName)
 
-	if role.isAssumeRoleMethod() {
-		stsClient, err := getSTSClient(creds.AccessKey, creds.SecretKey)
+	if role.isSTS() {
+		client, err := clients.NewSTSClient(creds.AccessKey, creds.SecretKey)
 		if err != nil {
 			return nil, err
 		}
-		assumeRoleReq := sts.CreateAssumeRoleRequest()
-		assumeRoleReq.RoleArn = role.RoleARN
-		assumeRoleReq.RoleSessionName = userName
-		assumeRoleResp, err := stsClient.AssumeRole(assumeRoleReq)
+		assumeRoleResp, err := client.AssumeRole(userName, role.RoleARN)
+		if err != nil {
+			return nil, err
+		}
+		// Parse the expiration into a time, so that when we return it from our API it's formatted
+		// the same way as how _we_ format times, so callers won't have to have different time parsers.
+		expiration, err := time.Parse("2006-01-02T15:04:05Z", assumeRoleResp.Credentials.Expiration)
 		if err != nil {
 			return nil, err
 		}
@@ -66,12 +70,9 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 			"access_key":     assumeRoleResp.Credentials.AccessKeyId,
 			"secret_key":     assumeRoleResp.Credentials.AccessKeySecret,
 			"security_token": assumeRoleResp.Credentials.SecurityToken,
-			"expiration":     assumeRoleResp.Credentials.Expiration, // TODO this date format may not follow our API's date format
+			"expiration":     expiration,
 		}, map[string]interface{}{
-			// TODO am I using all these things?
-			// TODO also, this doesn't have a username so this needs to be handled during revocation
-			"role_name":     roleName, // in use
-			"access_key_id": assumeRoleResp.Credentials.AccessKeyId,
+			"is_sts": true,
 		})
 
 		if role.TTL != 0 {
@@ -83,7 +84,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		return resp, nil
 	}
 
-	ramClient, err := getRAMClient(creds.AccessKey, creds.SecretKey)
+	client, err := clients.NewRAMClient(creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -98,19 +99,17 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	*/
 	success := false
 
-	createUserReq := ram.CreateCreateUserRequest()
-	createUserReq.UserName = userName
-	createUserReq.DisplayName = userName
-	createUserResp, err := ramClient.CreateUser(createUserReq)
+	createUserResp, err := client.CreateUser(userName)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if !success {
-			if err := deleteUser(ramClient, createUserResp.User.UserName); err != nil {
-				if b.Logger().IsError() {
-					b.Logger().Error(fmt.Sprintf("unable to delete user %s", userName), err)
-				}
+		if success {
+			return
+		}
+		if err := client.DeleteUser(createUserResp.User.UserName); err != nil {
+			if b.Logger().IsError() {
+				b.Logger().Error(fmt.Sprintf("unable to delete user %s", userName), err)
 			}
 		}
 	}()
@@ -130,12 +129,8 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		if err != nil {
 			return nil, err
 		}
-		createPolicyReq := ram.CreateCreatePolicyRequest()
-		createPolicyReq.PolicyName = policyName
-		createPolicyReq.Description = fmt.Sprintf("Created by Vault for %s using role %s.", req.DisplayName, roleName)
-		createPolicyReq.PolicyDocument = string(policyDoc)
 
-		createPolicyResp, err := ramClient.CreatePolicy(createPolicyReq)
+		createPolicyResp, err := client.CreatePolicy(policyName, string(policyDoc))
 		if err != nil {
 			return nil, err
 		}
@@ -149,57 +144,51 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		// to call the defer on each iteration, because we won't know until
 		// afterwards whether we've been successful.
 		defer func() {
-			if !success {
-				if err := deletePolicy(ramClient, createPolicyResp.Policy.PolicyName); err != nil {
-					if b.Logger().IsError() {
-						b.Logger().Error(fmt.Sprintf("unable to delete policy %s", createPolicyResp.Policy.PolicyName), err)
-					}
+			if success {
+				return
+			}
+			if err := client.DeletePolicy(createPolicyResp.Policy.PolicyName); err != nil {
+				if b.Logger().IsError() {
+					b.Logger().Error(fmt.Sprintf("unable to delete policy %s", createPolicyResp.Policy.PolicyName), err)
 				}
 			}
 		}()
 
-		attachPolReq := ram.CreateAttachPolicyToUserRequest()
-		attachPolReq.UserName = userName
-		attachPolReq.PolicyName = createPolicyResp.Policy.PolicyName
-		attachPolReq.PolicyType = createPolicyResp.Policy.PolicyType
-		if _, err := ramClient.AttachPolicyToUser(attachPolReq); err != nil {
+		if err := client.AttachPolicy(userName, createPolicyResp.Policy.PolicyName, createPolicyResp.Policy.PolicyType); err != nil {
 			return nil, err
 		}
 		// This defer is also in this loop on purpose.
 		defer func() {
-			if !success {
-				if err := detachPolicy(ramClient, attachPolReq.UserName, attachPolReq.PolicyName, attachPolReq.PolicyType); err != nil {
-					if b.Logger().IsError() {
-						b.Logger().Error(fmt.Sprintf("unable to detach policy name:%s, type:%s from user:%s", attachPolReq.PolicyName, attachPolReq.PolicyType, attachPolReq.UserName))
-					}
+			if success {
+				return
+			}
+			if err := client.DetachPolicy(userName, createPolicyResp.Policy.PolicyName, createPolicyResp.Policy.PolicyType); err != nil {
+				if b.Logger().IsError() {
+					b.Logger().Error(fmt.Sprintf(
+						"unable to detach policy name:%s, type:%s from user:%s", createPolicyResp.Policy.PolicyName, createPolicyResp.Policy.PolicyType, userName))
 				}
 			}
 		}()
 	}
 
 	for _, remotePol := range role.RemotePolicies {
-		attachPolReq := ram.CreateAttachPolicyToUserRequest()
-		attachPolReq.UserName = userName
-		attachPolReq.PolicyName = remotePol.Name
-		attachPolReq.PolicyType = remotePol.Type
-		if _, err := ramClient.AttachPolicyToUser(attachPolReq); err != nil {
+		if err := client.AttachPolicy(userName, remotePol.Name, remotePol.Type); err != nil {
 			return nil, err
 		}
 		// This defer is also in this loop on purpose.
 		defer func() {
-			if !success {
-				if err := detachPolicy(ramClient, attachPolReq.UserName, attachPolReq.PolicyName, attachPolReq.PolicyType); err != nil {
-					if b.Logger().IsError() {
-						b.Logger().Error(fmt.Sprintf("unable to detach policy name:%s, type:%s from user:%s", attachPolReq.PolicyName, attachPolReq.PolicyType, attachPolReq.UserName))
-					}
+			if success {
+				return
+			}
+			if err := client.DetachPolicy(userName, remotePol.Name, remotePol.Type); err != nil {
+				if b.Logger().IsError() {
+					b.Logger().Error(fmt.Sprintf("unable to detach policy name:%s, type:%s from user:%s", remotePol.Name, remotePol.Type, userName))
 				}
 			}
 		}()
 	}
 
-	accessKeyReq := ram.CreateCreateAccessKeyRequest()
-	accessKeyReq.UserName = userName
-	accessKeyResp, err := ramClient.CreateAccessKey(accessKeyReq)
+	accessKeyResp, err := client.CreateAccessKey(userName)
 	if err != nil {
 		return nil, err
 	}
@@ -213,11 +202,11 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		"access_key": accessKeyResp.AccessKey.AccessKeyId,
 		"secret_key": accessKeyResp.AccessKey.AccessKeySecret,
 	}, map[string]interface{}{
+		"is_sts":          false,
 		"username":        userName,
-		"role_name":       roleName,
 		"access_key_id":   accessKeyResp.AccessKey.AccessKeyId,
-		"remote_policies": role.RemotePolicies,
 		"inline_policies": inlinePolicies,
+		"remote_policies": role.RemotePolicies,
 	})
 
 	if role.TTL != 0 {
@@ -229,17 +218,26 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	return resp, nil
 }
 
-// TODO update this stuff
+func generateUsername(displayName, roleName string) string {
+	username := fmt.Sprintf("%s-%s-", displayName, roleName)
+	if len(username) > 48 {
+		username = username[0:48]
+	}
+	return fmt.Sprintf("%s%d-%d", username, time.Now().Unix(), rand.Int31n(10000))
+}
+
 const pathCredsHelpSyn = `
 Generate an access key pair for a specific role.
 `
 
 const pathCredsHelpDesc = `
 This path will generate a new, never before used key pair for
-accessing AWS. The IAM policy used to back this key pair will be
-the "user_group_name" parameter. For example, if this backend is mounted at "aws",
-then "aws/creds/deploy" would generate access keys for the "deploy" role.
+accessing AliCloud. The RAM policies used to back this key pair will be
+configured on the role. For example, if this backend is mounted at "alicloud",
+then "alicloud/creds/deploy" would generate access keys for the "deploy" role.
 
-The access keys will have a lease associated with them. The access keys
-can be revoked by using the lease ID.
+The access keys will have a ttl associated with them. The access keys
+can be revoked by ???.
 `
+
+// TODO need to replace the ??? above with what you actually do.

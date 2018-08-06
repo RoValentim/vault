@@ -167,8 +167,21 @@ func (b *backend) operationRoleCreateUpdate(ctx context.Context, req *logical.Re
 		role.MaxTTL = time.Duration(raw.(int)) * time.Second
 	}
 
+	// Now that the role is built, validate it.
 	if role.MaxTTL > 0 && role.TTL > role.MaxTTL {
 		return nil, errors.New("ttl exceeds max_ttl")
+	}
+	if role.isSTS() {
+		if len(role.RemotePolicies) > 0 {
+			return nil, errors.New("remote_policies must be blank when an arn is present")
+		}
+		if len(role.InlinePolicies) > 0 {
+			return nil, errors.New("inline_policies must be blank when an arn is present")
+		}
+	} else {
+		if len(role.InlinePolicies)+len(role.RemotePolicies) == 0 {
+			return nil, errors.New("must include an arn, or at least one of inline_policies or remote_policies")
+		}
 	}
 
 	entry, err := logical.StorageEntryJSON("role/"+roleName, role)
@@ -244,25 +257,8 @@ type roleEntry struct {
 	MaxTTL         time.Duration   `json:"max_ttl"`
 }
 
-func (r *roleEntry) isAssumeRoleMethod() bool {
+func (r *roleEntry) isSTS() bool {
 	return r.RoleARN != ""
-}
-
-// TODO if this is only used once, it shouldn't be here, even though I like it this way
-func (r *roleEntry) Validate() error {
-	if r.isAssumeRoleMethod() {
-		if len(r.RemotePolicies) > 0 {
-			return errors.New("remote_policies must be blank when an arn is present")
-		}
-		if len(r.InlinePolicies) > 0 {
-			return errors.New("inline_policies must be blank when an arn is present")
-		}
-	} else {
-		if len(r.InlinePolicies)+len(r.RemotePolicies) == 0 {
-			return errors.New("must include an arn, or at least one of inline_policies or remote_policies")
-		}
-	}
-	return nil
 }
 
 // Policies don't have ARNs and instead, their unique combination of their name and type comprise
@@ -282,7 +278,6 @@ type inlinePolicy struct {
 	PolicyDocument map[string]interface{} `json:"policy_document"`
 }
 
-// TODO go through these descriptions
 const pathListRolesHelpSyn = `List the existing roles in this backend`
 
 const pathListRolesHelpDesc = `Roles will be listed by the role name.`
@@ -295,13 +290,13 @@ const pathRolesHelpDesc = `
 This path allows you to read and write roles that are used to
 create access keys. These roles are associated with RAM policies that
 map directly to the route to read the access keys. For example, if the
-backend is mounted at "aws" and you create a role at "aws/roles/deploy"
-then a user could request access credConfig at "aws/creds/deploy".
+backend is mounted at "alicloud" and you create a role at "alicloud/roles/deploy"
+then a user could request access credConfig at "aliclouc/creds/deploy".
 
-You can either supply a user inline policy (via the policy argument), or
-provide a reference to an existing AWS policy by supplying the full arn
-reference (via the arn argument). Inline user policies written are normal
-IAM policies. Vault will not attempt to parse these except to validate
+You can supply inline or remote policies, or
+provide a reference to an existing AliCloud role by supplying the full arn
+reference. Inline policies written are normal
+RAM policies. Vault will not attempt to parse these except to validate
 that they're basic JSON. No validation is performed on arn references.
 
 To validate the keys, attempt to read an access key after writing the policy.

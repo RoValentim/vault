@@ -40,11 +40,11 @@ type backend struct {
 }
 
 const backendHelp = `
-The AWS backend dynamically generates AWS access keys for a set of
-IAM policies. The AWS access keys have a configurable lease set and
-are automatically revoked at the end of the lease.
+The AliCloud backend dynamically generates AliCloud access keys for a set of
+RAM policies. The AliCloud access keys have a configurable ttl set and
+are automatically revoked at the end of the ttl.
 
-After mounting this backend, credConfig to generate IAM keys must
-be configured with the "root" path and policies must be written using
+After mounting this backend, credentias to generate RAM keys must
+be configured and roles must be written using
 the "role/" endpoints before any access keys can be generated.
 `

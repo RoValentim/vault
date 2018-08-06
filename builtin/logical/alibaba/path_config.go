@@ -107,12 +107,12 @@ type credConfig struct {
 }
 
 const pathConfigRootHelpSyn = `
-Configure the root credConfig that are used to manage RAM.
+Configure the root credentials that are used to manage RAM.
 `
 
 const pathConfigRootHelpDesc = `
-Before doing anything, the AliCloud backend needs credConfig that are able
+Before doing anything, the AliCloud backend needs credentials that are able
 to manage RAM policies, users, access keys, etc. This endpoint is used
-to configure those credConfig. They don't necessarily need to be root
+to configure those credentials. They don't necessarily need to be root
 keys as long as they have permission to manage RAM.
 `
