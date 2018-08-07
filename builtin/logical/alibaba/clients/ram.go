@@ -6,9 +6,10 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 )
 
-func NewRAMClient(key, secret string) (*RAMClient, error) {
-	config := sdk.NewConfig()
-	config.Scheme = "https"
+func NewRAMClient(config *sdk.Config, key, secret string) (*RAMClient, error) {
+	if config.Scheme == "" {
+		config.Scheme = "https"
+	}
 	cred := credentials.NewAccessKeyCredential(key, secret)
 	client, err := ram.NewClientWithOptions("us-east-1", config, cred)
 	if err != nil {

@@ -10,9 +10,9 @@ import (
 	"github.com/hashicorp/vault/logical/framework"
 )
 
-const secretType = "access_key"
+const secretType = "alicloud"
 
-func secretAccessKeys() *framework.Secret {
+func (b *backend) pathSecrets() *framework.Secret {
 	return &framework.Secret{
 		Type: secretType,
 		Fields: map[string]*framework.FieldSchema{
@@ -25,12 +25,12 @@ func secretAccessKeys() *framework.Secret {
 				Description: "Secret Key",
 			},
 		},
-		Renew:  secretAccessKeysRenew,
-		Revoke: secretAccessKeysRevoke,
+		Renew:  operationRenew,
+		Revoke: b.operationRevoke,
 	}
 }
 
-func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func operationRenew(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	// STS already has a lifetime, and we don't support renewing it
 	isSTSRaw, ok := req.Secret.InternalData["is_sts"]
 	if ok {
@@ -66,7 +66,7 @@ func secretAccessKeysRenew(ctx context.Context, req *logical.Request, data *fram
 	return resp, nil
 }
 
-func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+func (b *backend) operationRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
 	// STS cleans up after itself so we can skip this if is_sts internal data
 	// element set to true.
 	isSTSRaw, ok := req.Secret.InternalData["is_sts"]
@@ -87,7 +87,7 @@ func secretAccessKeysRevoke(ctx context.Context, req *logical.Request, _ *framew
 	if creds == nil {
 		return nil, errors.New("unable to delete access key because no credentials are configured")
 	}
-	client, err := clients.NewRAMClient(creds.AccessKey, creds.SecretKey)
+	client, err := clients.NewRAMClient(b.clientConfig, creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -162,17 +162,10 @@ func getRemotePolicies(internalData map[string]interface{}, key string) ([]*remo
 	if !ok {
 		return nil, fmt.Errorf("secret is missing %s internal data", key)
 	}
-	values, ok := valuesRaw.([]interface{})
+	// TODO does this work IRL?
+	policies, ok := valuesRaw.([]*remotePolicy)
 	if !ok {
 		return nil, fmt.Errorf("secret is missing %s internal data", key)
-	}
-	policies := make([]*remotePolicy, len(values))
-	for i, v := range values {
-		policy, ok := v.(*remotePolicy)
-		if !ok {
-			return nil, fmt.Errorf("could not convert %+v to a policy", v)
-		}
-		policies[i] = policy
 	}
 	return policies, nil
 }

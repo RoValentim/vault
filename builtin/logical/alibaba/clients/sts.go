@@ -6,9 +6,10 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/sts"
 )
 
-func NewSTSClient(key, secret string) (*STSClient, error) {
-	config := sdk.NewConfig()
-	config.Scheme = "https"
+func NewSTSClient(config *sdk.Config, key, secret string) (*STSClient, error) {
+	if config.Scheme == "" {
+		config.Scheme = "https"
+	}
 	client, err := sts.NewClientWithOptions("us-east-1", config, credentials.NewAccessKeyCredential(key, secret))
 	if err != nil {
 		return nil, err

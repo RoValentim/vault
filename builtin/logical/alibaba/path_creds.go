@@ -52,7 +52,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 	userName := generateUsername(req.DisplayName, roleName)
 
 	if role.isSTS() {
-		client, err := clients.NewSTSClient(creds.AccessKey, creds.SecretKey)
+		client, err := clients.NewSTSClient(b.clientConfig, creds.AccessKey, creds.SecretKey)
 		if err != nil {
 			return nil, err
 		}
@@ -89,7 +89,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		return resp, nil
 	}
 
-	client, err := clients.NewRAMClient(creds.AccessKey, creds.SecretKey)
+	client, err := clients.NewRAMClient(b.clientConfig, creds.AccessKey, creds.SecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +207,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, data 
 		"access_key": accessKeyResp.AccessKey.AccessKeyId,
 		"secret_key": accessKeyResp.AccessKey.AccessKeySecret,
 	}, map[string]interface{}{
+		"role_name":       roleName,
 		"is_sts":          false,
 		"username":        userName,
 		"access_key_id":   accessKeyResp.AccessKey.AccessKeyId,
